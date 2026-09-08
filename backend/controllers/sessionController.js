@@ -6,15 +6,14 @@ import FormData from 'form-data'; // <-- NEW: For sending files to FastAPI
 import path from 'path';
 import mongoose from 'mongoose';
 // URL for the Python AI Microservice (Configurable for deployment)
-const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:8000';
+const rawAiUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
+const AI_SERVICE_URL = rawAiUrl.replace(/\/+$/, '');
 
 // Helper function to send an update via Socket.io
 const pushSocketUpdate = (io, userId, sessionId, status, message, session = null) => {
-    // We target the user by their ID, assuming the user's socket is joined to a room named after their userId
-    // (This room setup must be done on socket connection, which we will address later in server.js)
     io.to(userId.toString()).emit('sessionUpdate', {
         sessionId,
-        status, // e.g., 'AI_GENERATING_QUESTIONS', 'QUESTIONS_READY', 'EVALUATION_FAILED'
+        status,
         message,
         session,
     });
@@ -43,7 +42,7 @@ const createSession = asyncHandler(async (req, res) => {
 
     const io = req.app.get('io');
 
-    // 2. Immediately respond to the client (Latency Management)
+    // 2. Immediately respond to the client
     res.status(202).json({
         message: 'Session created. Generating questions asynchronously...',
         sessionId: session._id,
@@ -51,35 +50,34 @@ const createSession = asyncHandler(async (req, res) => {
     });
 
     // --- ASYNCHRONOUS BACKGROUND TASK START ---
-
-    // Using a self-executing async function to run the process in the background
     (async () => {
         try {
-            // A. Notify the user via Socket.io that processing has started
             pushSocketUpdate(io, userId, session._id, 'AI_GENERATING_QUESTIONS', `Generating ${count} questions for ${role}...`);
 
-            // B. Call the Python AI Microservice
-            // backend/controllers/sessionController.js inside createSession
+            // Fetch with a 25-second controller timeout to prevent cloud gateway timeout
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 25000);
+
             const aiResponse = await fetch(`${AI_SERVICE_URL}/generate-questions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     role,
                     level,
-                    count,
-                    interview_type: interviewType // ADD THIS LINE
+                    count: Number(count),
+                    interview_type: interviewType
                 }),
+                signal: controller.signal
             });
+            clearTimeout(timeoutId);
 
             if (!aiResponse.ok) {
-                // If the AI service returns a non-200 status
                 const errorBody = await aiResponse.text();
-                throw new Error(`AI Service error: ${aiResponse.status} - ${errorBody}`);
+                throw new Error(`AI Service status ${aiResponse.status}: ${errorBody}`);
             }
 
             const aiData = await aiResponse.json();
             const codingCount = interviewType === 'coding-mix' ? Math.floor(count * 0.2) : 0;
-            // C. Map the raw questions into the structured Mongoose sub-document format
             const questionsArray = aiData.questions.map((qText, index) => ({
                 questionText: qText,
                 questionType: index < codingCount ? 'coding' : 'oral',
@@ -87,21 +85,46 @@ const createSession = asyncHandler(async (req, res) => {
                 isSubmitted: false,
             }));
 
-            // D. Update the session in MongoDB
             session.questions = questionsArray;
             session.status = 'in-progress';
             await session.save();
 
-            // E. Push final result back to the client via Socket.io
             pushSocketUpdate(io, userId, session._id, 'QUESTIONS_READY', 'Questions generated successfully. Starting session.', session);
 
         } catch (error) {
-            console.error(`Session Creation Failure for ${session._id}:`, error.message);
+            console.error(`Session Creation Warning for ${session._id}:`, error.message);
 
-            // F. Handle failure: Update status and notify client
-            session.status = 'failed';
+            // Fallback question engine to ensure session NEVER fails for the candidate
+            const codingCount = interviewType === 'coding-mix' ? Math.floor(count * 0.2) : 0;
+            const oralCount = count - codingCount;
+
+            const fallbackCoding = [
+                `Write a function in JavaScript/Python to reverse a string without using built-in reverse methods.`,
+                `Implement a function to find the first non-repeating character in a string for a ${role}.`,
+                `Write an algorithm to check if two strings are valid anagrams of each other.`
+            ];
+
+            const fallbackOral = [
+                `Explain the key architectural concepts of ${role} and how data flows through the application.`,
+                `What are the key differences between synchronous and asynchronous code execution in modern applications?`,
+                `How do you optimize state management and handle performance bottlenecks in a ${level} level codebase?`,
+                `Describe how authentication and authorization (e.g. JWT/OAuth) are securely implemented.`,
+                `Explain RESTful API design principles and how error handling should be structured.`
+            ];
+
+            const questionsArray = [];
+            for (let i = 0; i < codingCount; i++) {
+                questionsArray.push({ questionText: fallbackCoding[i % fallbackCoding.length], questionType: 'coding', isEvaluated: false, isSubmitted: false });
+            }
+            for (let i = 0; i < oralCount; i++) {
+                questionsArray.push({ questionText: fallbackOral[i % fallbackOral.length], questionType: 'oral', isEvaluated: false, isSubmitted: false });
+            }
+
+            session.questions = questionsArray;
+            session.status = 'in-progress';
             await session.save();
-            pushSocketUpdate(io, userId, session._id, 'GENERATION_FAILED', `Question generation failed. Reason: ${error.message}.`);
+
+            pushSocketUpdate(io, userId, session._id, 'QUESTIONS_READY', 'Questions ready for your interview session.', session);
         }
     })();
 });
