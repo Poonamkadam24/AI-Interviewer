@@ -134,7 +134,7 @@ export const sessionSlice = createSlice({
     },
     extraReducers: (builder) => {
         builder
-            
+
             .addCase(getSessions.pending, (state) => { state.isLoading = true; })
             .addCase(getSessions.fulfilled, (state, action) => {
                 state.isLoading = false;
@@ -160,19 +160,19 @@ export const sessionSlice = createSlice({
                 state.isLoading = false;
                 state.sessions = state.sessions.filter(s => s._id !== action.payload);
             })
-         
+
             .addCase(submitAnswer.pending, (state) => {
                 // Do NOT set global isLoading here, or it freezes the whole app.
                 // We handle button loading locally in the component.
             })
             .addCase(submitAnswer.fulfilled, (state, action) => {
-                state.isLoading = false; 
+                state.isLoading = false;
 
-              
+
                 if (action.payload && Array.isArray(action.payload.questions)) {
                     state.activeSession = action.payload;
                 }
-                
+
             })
             .addCase(submitAnswer.rejected, (state, action) => {
                 state.isError = true;
