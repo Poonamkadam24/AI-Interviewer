@@ -19,23 +19,21 @@ const server = http.createServer(app);
 const allowedOrigin = [
     'http://localhost:5174',
     'http://localhost:5173',
-]
+    process.env.CLIENT_URL, // e.g. https://your-app.vercel.app
+].filter(Boolean);
+
+const corsOptions = {
+    origin: process.env.CLIENT_URL ? [process.env.CLIENT_URL, 'http://localhost:5173', 'http://localhost:5174'] : '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+};
 
 const io = new Server(server, {
-    cors: {
-        origin: allowedOrigin,
-        methods: ['GET', 'POST', 'PUT', 'DELETE',  'OPTIONS'],
-        credentials: true,
-        allowedHeaders: ['Content-Type', 'Authorization'],
-    }
-})
+    cors: corsOptions
+});
 
-app.use(cors({
-    origin: allowedOrigin,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization',"X-Requested-With"],
-}))
+app.use(cors(corsOptions));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -51,8 +49,8 @@ app.use("/api/sessions", sessionRoutes);
 
 io.on("connection", (socket) => {
     console.log(`A user Connected ${socket.id}`);
-    const userId=socket.handshake.query.userId;
-    if(userId){
+    const userId = socket.handshake.query.userId;
+    if (userId) {
 
         socket.join(userId);
         console.log(`User ${socket.id} joined room: ${userId}`);
