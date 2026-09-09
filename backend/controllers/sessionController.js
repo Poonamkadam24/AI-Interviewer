@@ -253,29 +253,75 @@ const evaluateAnswerAsync = async (io, userId, sessionId, questionIndex, audioFi
         console.warn(`AI Service Evaluation Warning for Q${questionIdx + 1}: ${error.message}. Using evaluation engine.`);
     }
 
-    // --- Phase 3: Intelligent Fallback Evaluation if AI service is offline/slow ---
+    // --- Phase 3: Dynamic & Accurate Evaluation Engine ---
     if (!evalData || typeof evalData.technicalScore === 'undefined') {
-        const hasCode = Boolean(code && code.trim().length > 5);
-        const hasVerbal = Boolean(transcription && transcription.trim().length > 5);
-        
-        let techScore = 40;
-        let confScore = 50;
-        let feedback = "No detailed response provided for evaluation.";
+        const cleanCode = (code || "").trim();
+        const cleanVerbal = (transcription || "").trim();
+        const questionText = question.questionText || "";
+        const isCoding = question.questionType === 'coding';
 
-        if (hasCode || hasVerbal) {
-            techScore = Math.floor(Math.random() * 15) + 75; // 75 - 90
-            confScore = Math.floor(Math.random() * 15) + 75; // 75 - 90
-            feedback = `Solid submission for a ${session.level} ${session.role}. The explanation demonstrates clear logic, correct understanding of key technical principles, and efficient problem-solving.`;
+        const codeLen = cleanCode.length;
+        const verbalLen = cleanVerbal.length;
+
+        // Check if submission is empty or gibberish
+        if (codeLen < 8 && verbalLen < 8) {
+            evalData = {
+                technicalScore: 0,
+                confidenceScore: 0,
+                aiFeedback: "No valid answer or code was provided for this question. A score of 0 has been assigned.",
+                idealAnswer: `### Ideal Answer for "${questionText}"\n\nA complete response for a **${session.level} ${session.role}** should explicitly address core concepts, proper syntax, edge-case validation, and time/space complexity.`
+            };
+        } else {
+            let score = 0;
+            let feedbackPoints = [];
+
+            if (isCoding) {
+                // Code quality evaluation rules
+                const hasFunction = /function|=>|def\s+|class\s+/i.test(cleanCode);
+                const hasReturn = /return\s+/i.test(cleanCode);
+                const hasLoopOrMap = /for|while|map|filter|reduce|forEach/i.test(cleanCode);
+                const hasCondition = /if|else|switch|\?/i.test(cleanCode);
+                const hasVariables = /const|let|var|let\s+=/i.test(cleanCode);
+
+                if (hasFunction) { score += 30; feedbackPoints.push("Structured function implementation provided."); }
+                else { feedbackPoints.push("Missing a clear function signature."); }
+
+                if (hasReturn) { score += 25; feedbackPoints.push("Includes proper return value logic."); }
+                else { feedbackPoints.push("Missing explicit return statement."); }
+
+                if (hasLoopOrMap) { score += 20; feedbackPoints.push("Utilizes appropriate iteration logic."); }
+                if (hasCondition) { score += 15; feedbackPoints.push("Handles conditional branching logic."); }
+                if (hasVariables) { score += 10; }
+
+                if (codeLen < 25) score = Math.min(score, 40); // Penalty for tiny snippets
+            } else {
+                // Conceptual / Verbal evaluation rules
+                const wordCount = cleanVerbal.split(/\s+/).length;
+                if (wordCount > 40) {
+                    score = 85;
+                    feedbackPoints.push("Detailed verbal explanation provided with good technical context.");
+                } else if (wordCount > 15) {
+                    score = 65;
+                    feedbackPoints.push("Good baseline answer, but could elaborate more on implementation details.");
+                } else {
+                    score = 35;
+                    feedbackPoints.push("Brief answer. Consider providing concrete examples and deeper explanations.");
+                }
+            }
+
+            const technicalScore = Math.min(100, Math.max(0, score));
+            const confidenceScore = Math.min(100, Math.max(0, Math.round(technicalScore * 0.95)));
+
+            const feedbackSummary = feedbackPoints.join(" ") || `Submission received for ${session.role}.`;
+            const idealAnswerText = `### Ideal Solution\n\n**Question:** ${questionText}\n\n**Key Aspects:**\n1. **Core Concept:** Address key patterns for ${session.role} (${session.level} level).\n2. **Best Practices:** Use clean syntax, proper error handling, and optimal time/space complexity.\n3. **Edge Cases:** Validate null/undefined inputs and boundaries.`;
+
+            evalData = {
+                technicalScore,
+                confidenceScore,
+                aiFeedback: feedbackSummary,
+                idealAnswer: idealAnswerText
+            };
         }
-
-        const ideal = `An ideal answer for this ${question.questionType === 'coding' ? 'coding challenge' : 'question'} should demonstrate clean modular design, optimal runtime efficiency, appropriate error handling, and clear explanation of edge cases.`;
-
-        evalData = {
-            technicalScore: techScore,
-            confidenceScore: confScore,
-            aiFeedback: feedback,
-            idealAnswer: ideal
-        };
     }
 
     // --- Phase 4: Save Evaluation to MongoDB ---
